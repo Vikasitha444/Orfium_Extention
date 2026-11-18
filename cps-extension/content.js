@@ -1,5 +1,5 @@
 // ===== CPS Dashboard Tweaks =====
-// Aluth tweak ekak add karanna: TWEAKS array ekata danna, ilaga eka applyTweaks() eke handle karanna.
+// Aluth tweak ekak add karanna: TWEAKS array ekata danna, applyTweaks() eke handle karanna.
 
 const TWEAKS = [
   {
@@ -15,6 +15,12 @@ const TWEAKS = [
 ];
 
 // ---------- helpers ----------
+function parentOf(el) {
+  if (el.parentElement) return el.parentElement;
+  const root = el.getRootNode && el.getRootNode();
+  return root && root.host ? root.host : null; // shadow root eken eliyata
+}
+
 function* walk(root) {
   const stack = [root];
   while (stack.length) {
@@ -55,33 +61,80 @@ function parseTime(str) {
   return parts.reduce((acc, n) => acc * 60 + n, 0);
 }
 
-function findTimeInputs() {
-  // Page eke "Start time" / "End time" inputs (DOM order eke palaveni segment eka gannawa)
-  const starts = [];
-  const ends = [];
-  for (const node of walk(document.body)) {
-    if (!(node instanceof Element) || node.tagName !== "INPUT") continue;
-    const box = node.closest(
-      "ytcp-media-timestamp-input, ytcp-form-input-container, ytcp-form-textarea"
-    );
-    const text = ((box && box.innerText) || node.getAttribute("aria-label") || "")
-      .toLowerCase();
-    if (text.includes("start time")) starts.push({ input: node, box });
-    else if (text.includes("end time")) ends.push({ input: node, box });
+function fieldKind(input) {
+  // Input eka udata yaddi palaveni "Start time" ho "End time" label eka hamuwena thanin kind eka denawa
+  const own = ((input.getAttribute("aria-label") || "") + " " + (input.placeholder || "")).toLowerCase();
+  if (own.includes("start time")) return "start";
+  if (own.includes("end time")) return "end";
+
+  let el = input;
+  for (let i = 0; i < 8 && el; i++) {
+    el = parentOf(el);
+    if (!el) break;
+    const text = (el.innerText || el.textContent || "").toLowerCase();
+    const hasStart = text.includes("start time");
+    const hasEnd = text.includes("end time");
+    if (hasStart && hasEnd) break; // godak udata giya
+    if (hasStart) return "start";
+    if (hasEnd) return "end";
   }
-  return { start: starts[0], end: ends[0] };
+  return null;
 }
 
-function getBanner(anchorEl) {
+let loggedMissing = false;
+function findTimeInputs() {
+  let start = null;
+  let end = null;
+  let count = 0;
+  for (const node of walk(document.body)) {
+    if (!(node instanceof Element) || node.tagName !== "INPUT") continue;
+    count++;
+    const kind = fieldKind(node);
+    if (kind === "start" && !start) start = node;
+    else if (kind === "end" && !end) end = node;
+  }
+  if ((!start || !end) && !loggedMissing) {
+    loggedMissing = true;
+    console.log("[CPS] Start/End time inputs hoyaganna bari una. Inputs found:", count);
+  }
+  return { start, end };
+}
+
+function findAssetLabel() {
+  for (const node of walk(document.body)) {
+    if (
+      node instanceof Element &&
+      node.classList &&
+      node.classList.contains("asset-select-label") &&
+      (node.textContent || "").includes("Asset for claim")
+    ) {
+      return node;
+    }
+  }
+  return null;
+}
+
+function getBanner() {
   let banner = document.getElementById("cps-duration-banner");
   if (!banner) {
-    banner = document.createElement("div");
+    banner = document.createElement("span");
     banner.id = "cps-duration-banner";
     banner.style.cssText =
-      "margin:10px 0;padding:8px 12px;border-radius:8px;font:600 14px Roboto,Arial,sans-serif;max-width:340px;";
+      "margin-left:12px;padding:3px 10px;border-radius:6px;font:700 13px Roboto,Arial,sans-serif;white-space:nowrap;";
   }
-  if (!banner.isConnected && anchorEl) {
-    anchorEl.insertAdjacentElement("afterend", banner);
+  const label = findAssetLabel();
+  if (label) {
+    // "Asset for claim" ekata dakunu paththe pennanna
+    label.style.setProperty("display", "flex", "important");
+    label.style.setProperty("align-items", "center", "important");
+    if (banner.parentElement !== label) label.appendChild(banner);
+  } else if (!banner.isConnected) {
+    // Label eka na nam, page eka udata fixed widiyata
+    banner.style.position = "fixed";
+    banner.style.top = "80px";
+    banner.style.right = "20px";
+    banner.style.zIndex = "99999";
+    document.body.appendChild(banner);
   }
   return banner;
 }
@@ -95,16 +148,15 @@ function updateDuration(cfg) {
   const { start, end } = findTimeInputs();
   if (!start || !end) return removeBanner();
 
-  const s = parseTime(start.input.value);
-  const e = parseTime(end.input.value);
+  const s = parseTime(start.value);
+  const e = parseTime(end.value);
   if (s === null || e === null || e < s) return removeBanner();
 
   const duration = e - s;
-  const row = (start.box && start.box.parentElement) || start.input;
-  const banner = getBanner(row);
+  const banner = getBanner();
 
   if (duration <= cfg.maxSeconds) {
-    banner.textContent = `⚠️ ${cfg.message} ⚠️  (${duration.toFixed(1)}s)`;
+    banner.textContent = `⚠️ ${cfg.message} ⚠️ (${duration.toFixed(1)}s)`;
     banner.style.background = "#d93025";
     banner.style.color = "#fff";
   } else {
@@ -128,8 +180,6 @@ function applyTweaks() {
   if (!durationActive) removeBanner();
 }
 
-// Real time: DOM wenas wena welawata + "Set start/end time" click karama input events fire wenne naththan
-// nisa, 250ms gane poll karanawa.
 let timer = null;
 new MutationObserver(() => {
   clearTimeout(timer);

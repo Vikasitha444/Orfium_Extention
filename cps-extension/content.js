@@ -10,7 +10,11 @@ const TWEAKS = [
   {
     name: "Sub-3s warning",
     urlIncludes: "/claims/manual",
-    durationWarning: { maxSeconds: 3, message: "DO NOT CLAIM SUB 3" },
+    // Udin patan: palaveni match wena tier eka pennanawa (max = seconds, inclusive)
+    durationTiers: [
+      { max: 3, text: "⚠️ DO NOT CLAIM SUB 3 ⚠️", bg: "#d93025", color: "#fff" },
+      { max: 7, text: "⏱️ SHORT USE", bg: "#f9ab00", color: "#202124" },
+    ],
   },
 ];
 
@@ -144,7 +148,7 @@ function removeBanner() {
   if (b) b.remove();
 }
 
-function updateDuration(cfg) {
+function updateDuration(tiers) {
   const { start, end } = findTimeInputs();
   if (!start || !end) return removeBanner();
 
@@ -154,11 +158,12 @@ function updateDuration(cfg) {
 
   const duration = e - s;
   const banner = getBanner();
+  const tier = tiers.find((t) => duration <= t.max);
 
-  if (duration <= cfg.maxSeconds) {
-    banner.textContent = `⚠️ ${cfg.message} ⚠️ (${duration.toFixed(1)}s)`;
-    banner.style.background = "#d93025";
-    banner.style.color = "#fff";
+  if (tier) {
+    banner.textContent = `${tier.text} (${duration.toFixed(1)}s)`;
+    banner.style.background = tier.bg;
+    banner.style.color = tier.color;
   } else {
     banner.textContent = `Duration: ${duration.toFixed(1)}s`;
     banner.style.background = "#e6f4ea";
@@ -172,9 +177,9 @@ function applyTweaks() {
   for (const tweak of TWEAKS) {
     if (tweak.urlIncludes && !location.href.includes(tweak.urlIncludes)) continue;
     if (tweak.hideButtonsWithText) hideButtonsByText(tweak.hideButtonsWithText);
-    if (tweak.durationWarning) {
+    if (tweak.durationTiers) {
       durationActive = true;
-      updateDuration(tweak.durationWarning);
+      updateDuration(tweak.durationTiers);
     }
   }
   if (!durationActive) removeBanner();

@@ -31,7 +31,8 @@ function* walk(root) {
     const node = stack.pop();
     yield node;
     if (node.shadowRoot) stack.push(node.shadowRoot);
-    for (const child of node.children || []) stack.push(child);
+    const kids = node.children ? Array.from(node.children) : [];
+    for (let i = kids.length - 1; i >= 0; i--) stack.push(kids[i]); // DOM order
   }
 }
 
@@ -87,21 +88,22 @@ function fieldKind(input) {
 
 let loggedMissing = false;
 function findTimeInputs() {
-  let start = null;
-  let end = null;
+  // Segments okkoma, DOM order eken
+  const starts = [];
+  const ends = [];
   let count = 0;
   for (const node of walk(document.body)) {
     if (!(node instanceof Element) || node.tagName !== "INPUT") continue;
     count++;
     const kind = fieldKind(node);
-    if (kind === "start" && !start) start = node;
-    else if (kind === "end" && !end) end = node;
+    if (kind === "start") starts.push(node);
+    else if (kind === "end") ends.push(node);
   }
-  if ((!start || !end) && !loggedMissing) {
+  if ((!starts.length || !ends.length) && !loggedMissing) {
     loggedMissing = true;
     console.log("[CPS] Start/End time inputs hoyaganna bari una. Inputs found:", count);
   }
-  return { start, end };
+  return { starts, ends };
 }
 
 function findAssetLabel() {
@@ -149,23 +151,30 @@ function removeBanner() {
 }
 
 function updateDuration(tiers) {
-  const { start, end } = findTimeInputs();
-  if (!start || !end) return removeBanner();
+  const { starts, ends } = findTimeInputs();
+  const pairs = Math.min(starts.length, ends.length);
 
-  const s = parseTime(start.value);
-  const e = parseTime(end.value);
-  if (s === null || e === null || e < s) return removeBanner();
+  let total = 0;
+  let counted = 0;
+  for (let i = 0; i < pairs; i++) {
+    const s = parseTime(starts[i].value);
+    const e = parseTime(ends[i].value);
+    if (s === null || e === null || e < s) continue; // adu / waradi segment skip
+    total += e - s;
+    counted++;
+  }
+  if (!counted) return removeBanner();
 
-  const duration = e - s;
   const banner = getBanner();
-  const tier = tiers.find((t) => duration <= t.max);
+  const tier = tiers.find((t) => total <= t.max);
+  const info = `${total.toFixed(1)}s`;
 
   if (tier) {
-    banner.textContent = `${tier.text} (${duration.toFixed(1)}s)`;
+    banner.textContent = `${tier.text} (${info})`;
     banner.style.background = tier.bg;
     banner.style.color = tier.color;
   } else {
-    banner.textContent = `Duration: ${duration.toFixed(1)}s`;
+    banner.textContent = `Duration: ${info}`;
     banner.style.background = "#e6f4ea";
     banner.style.color = "#137333";
   }

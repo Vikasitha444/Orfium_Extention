@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "CPS Dashboard Tweaks",
-  "version": "1.3.0",
+  "version": "1.4.1",
   "description": "YouTube Studio manual claiming page eka customize karanna.",
   "content_scripts": [
     {

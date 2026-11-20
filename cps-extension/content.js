@@ -5,7 +5,7 @@ const TWEAKS = [
   {
     name: "Hide review/claim buttons",
     urlIncludes: "/claims/manual",
-    hideButtonsWithText: ["Mark as reviewed", "Claim"],
+    //hideButtonsWithText: ["Mark as reviewed", "Claim"],
   },
   {
     name: "Sub-3s warning",

@@ -1,0 +1,338 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Writer Verifier</title>
+<style>
+  *{box-sizing:border-box}
+  body{font-family:system-ui,Segoe UI,Arial,sans-serif;margin:0;background:#f4f5f7;color:#1f2430}
+  header{background:#1f2430;color:#fff;padding:14px 22px;font-size:18px;font-weight:600}
+  main{max-width:1200px;margin:18px auto;padding:0 16px}
+  .cols{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  @media(max-width:800px){.cols{grid-template-columns:1fr}}
+  .box{background:#fff;border:1px solid #dcdfe6;border-radius:8px;padding:12px}
+  .box h2{margin:0 0 8px;font-size:15px}
+  .box small{color:#6b7280;font-weight:400}
+  textarea{width:100%;height:240px;font:13px/1.4 Consolas,monospace;border:1px solid #cfd4dc;border-radius:6px;padding:8px;resize:vertical}
+  .bar{margin:14px 0;display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+  button{background:#2563eb;color:#fff;border:0;border-radius:6px;padding:9px 18px;font-size:14px;cursor:pointer}
+  button.grey{background:#6b7280}
+  button.sm{padding:4px 10px;font-size:12px;margin-top:6px}
+  button:disabled{opacity:.6;cursor:wait}
+  .sum{font-size:14px;font-weight:600;margin-left:8px}
+  table{width:100%;border-collapse:collapse;background:#fff;border:1px solid #dcdfe6;border-radius:8px;overflow:hidden;font-size:14px}
+  th,td{padding:8px 10px;border-bottom:1px solid #eceef2;text-align:left;vertical-align:top}
+  th{background:#eef0f4;font-size:13px}
+  .tag{display:inline-block;padding:2px 9px;border-radius:12px;font-size:12px;font-weight:600;white-space:nowrap}
+  .ok{background:#dcfce7;color:#166534}
+  .bad{background:#fee2e2;color:#991b1b}
+  .note{color:#6b7280;font-size:12px;margin-top:3px}
+  .ev{background:#f0fdf4;border:1px solid #bbf7d0;border-radius:6px;padding:6px 8px;margin-top:6px;font-size:12px;color:#14532d}
+  a{color:#2563eb}
+  .wrap{overflow-x:auto}
+</style>
+</head>
+<body>
+<header>Writer Verifier — YouTube CPS vs ASCAP / BMI / MLC</header>
+<main>
+  <div class="cols">
+    <div class="box">
+      <h2>Side 1 — YouTube CPS writers <small>(paste as is)</small></h2>
+      <textarea id="cps" placeholder="Max Martin,Miskovsky Lisa Maria,Yacoub Rami"></textarea>
+      <h2 style="margin-top:10px">Alternative names <small>(from AppSheet — paste as is: "aka", "=", links, any format)</small></h2>
+      <textarea id="alt" style="height:110px" placeholder="Bruno Mars aka Peter Gene Hernandez&#10;Andrew Watt = Andrew Wotman&#10;https://en.wikipedia.org/wiki/Andrew_Watt"></textarea>
+    </div>
+    <div class="box">
+      <h2>Side 2 — Web resource writers <small>(ASCAP / BMI / MLC, paste as is)</small></h2>
+      <textarea id="web" placeholder="MISKOVSKY LISA MARIA&#9;STIM&#9;258622059&#10;SANDBERG MARTIN KARL&#9;STIM&#9;215866753&#10;..."></textarea>
+    </div>
+  </div>
+  <div class="bar">
+    <button onclick="verify()">Verify</button>
+    <button id="allBtn" onclick="checkAll()">Check stage names online</button>
+    <button class="grey" onclick="clearAll()">Clear</button>
+    <span class="sum" id="sum"></span>
+  </div>
+  <div class="wrap" id="out"></div>
+</main>
+
+<script>
+const AFF = ['ASCAP','BMI','SESAC','PRS','MLC','GMR','SOCAN','APRA','GEMA','SACEM','SUISA','BUMA','STIM','KODA','TONO','JASRAC'];
+const NOISE = /\b(composer\/author|composer|author|lyricist|arranger|publisher|writers?|composers?|ipi\s*#?|affiliation|name)\b/gi;
+let web = [], usedWeb = new Set(), data = [];
+
+function pieces(text){ return text.split(/\r?\n|[,;]/).map(s => s.trim()).filter(Boolean); }
+
+function cleanLine(line){
+  let s = line.replace(/\b\d{8,11}\b/g,' ');
+  let aff = '';
+  for (const a of AFF){
+    const re = new RegExp('\\b'+a+'\\b','i');
+    if (re.test(s)){ aff = a; s = s.replace(re,' '); break; }
+  }
+  s = s.replace(NOISE,' ').replace(/\t+/g,' ').replace(/\s+/g,' ').trim();
+  return {name:s, aff};
+}
+
+const URL_RE = /https?:\/\/[^\s)\]>"]+/g;
+// alias markers: aka / a.k.a / also known as / real name / = / -> / |
+const SEP = /\s*(?:\ba\.?k\.?a\.?(?=\s|$)|\balso known as\b|\bformerly known as\b|\breal name\b|\blegal name\b|\bbirth name\b|\bstage name\b|\balias(?:es)?\b|\bnee\b|=|→|->|\|)\s*/i;
+const LABEL = /^(?:alternative names?|alternate names?|alt\.? names?|other names?|aliases|alias|aka|a\.k\.a\.?|also known as|real name|legal name|birth name|stage name)\s*[:\-–]\s*(.*)$/i;
+
+// One raw name -> variants: the name itself, and any "nickname" written in double quotes as its own variant
+function variantsOf(raw){
+  const nick = [], out = [];
+  const base = raw.replace(/["“”]([^"“”]+)["“”]/g, (m,n) => { nick.push(n); return ' '; });
+  [base, ...nick].forEach(v => {
+    const c = cleanLine(v).name;
+    if (/[a-z]/i.test(c) && !out.some(x => x.toLowerCase() === c.toLowerCase())) out.push(c);
+  });
+  return out;
+}
+
+// "Hernandez, Peter Gene" stays one name; "Bruno Mars, Peter Gene Hernandez" (every piece 2+ words) splits
+function splitComma(part){
+  const ps = part.split(',').map(x => x.trim()).filter(Boolean);
+  return ps.length > 1 && ps.every(x => x.split(/\s+/).length >= 2) ? ps : [part];
+}
+
+const uniq = arr => arr.filter((v,i) => arr.findIndex(x => x.toLowerCase() === v.toLowerCase()) === i);
+
+// CPS side: each entry = {name, alt:[{name,urls}], urls}. A line like "Bruno Mars aka Peter Gene Hernandez" is ONE writer with an alternative name.
+function parseCps(text){
+  const entries = [], seen = new Set();
+  const add = (variants, urls) => {
+    if (!variants.length || seen.has(variants[0].toLowerCase())) return;
+    seen.add(variants[0].toLowerCase());
+    entries.push({name:variants[0], alt:variants.slice(1).map(n => ({name:n, urls})), urls});
+  };
+  text.split(/\r?\n/).forEach(raw => {
+    const urls = raw.match(URL_RE) || [];
+    const line = raw.replace(URL_RE,' ').trim();
+    if (!/[a-z]/i.test(cleanLine(line).name)){ if (urls.length && entries.length) entries[entries.length-1].urls.push(...urls); return; }
+    if (SEP.test(line)) add(uniq(line.split(SEP).map(x => x.trim()).filter(Boolean).flatMap(variantsOf)), urls);
+    else line.split(/[,;]/).forEach(x => add(variantsOf(x.trim()), urls));
+  });
+  return entries;
+}
+
+// AppSheet "alternative names" text, any layout -> groups of names that are the same person (+ evidence links)
+function parseAliasText(text){
+  const groups = []; let last = null;
+  const addNames = (g, str) => {
+    const parts = str.split(SEP).map(x => x.trim()).filter(Boolean).flatMap(splitComma);
+    g.variants = uniq(g.variants.concat(parts.flatMap(variantsOf)));
+  };
+  text.split(/\r?\n/).forEach(raw => {
+    const urls = raw.match(URL_RE) || [];
+    let line = raw.replace(URL_RE,' ').trim();
+    if (!/[a-z]/i.test(line)){ if (urls.length && last) last.urls.push(...urls); return; }
+    const lab = line.match(LABEL);
+    if (lab){                                   // "Alternative names: X, Y" line -> belongs to the writer above it
+      if (!last){ last = {variants:[], urls:[]}; groups.push(last); }
+      last.urls.push(...urls); addNames(last, lab[1]); return;
+    }
+    last = {variants:[], urls:[...urls]}; groups.push(last); addNames(last, line);
+  });
+  return groups.filter(g => g.variants.length);
+}
+
+function parseWeb(text){
+  const out = [];
+  pieces(text).forEach(l => {
+    const {name, aff} = cleanLine(l);
+    if (!/[a-z]/i.test(name)){
+      if (aff && out.length && !out[out.length-1].aff) out[out.length-1].aff = aff;
+      return;
+    }
+    out.push({name, aff});
+  });
+  return out;
+}
+
+const SUFFIX = new Set(['ii','iii','iv','jr','sr']);
+const tokens = n => n.toLowerCase().replace(/[^a-z0-9\s]/g,' ').split(/\s+/).filter(t => t && !SUFFIX.has(t));
+
+function rel(cps, line){
+  const A = tokens(cps), B = tokens(line);
+  if (!A.length || !B.length) return null;
+  if ([...A].sort().join(' ') === [...B].sort().join(' '))
+    return A.join(' ') === B.join(' ') ? 'same' : 'reordered';
+  if (A.every(t => B.includes(t))) return 'partial';
+  if (B.length >= 2 && B.every(t => A.includes(t))) return 'partial';
+  return null;
+}
+
+const esc = s => String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+function verify(){
+  const cps = parseCps(document.getElementById('cps').value);
+  const groups = parseAliasText(document.getElementById('alt').value);
+  web = parseWeb(document.getElementById('web').value);
+  usedWeb = new Set(); data = [];
+  if (!cps.length){ document.getElementById('out').innerHTML=''; document.getElementById('sum').textContent='Paste the CPS writers first.'; return; }
+  // add AppSheet alternative names to the CPS writer they belong to
+  cps.forEach(e => groups.forEach(g => {
+    const names = [e.name, ...e.alt.map(a => a.name)];
+    if (g.variants.some(v => names.some(n => rel(n, v))))
+      g.variants.forEach(v => { if (!names.some(n => isSame(n, v))) e.alt.push({name:v, urls:g.urls}); });
+  }));
+  const order = {same:0, reordered:1, partial:2};
+  const findWeb = name => {
+    let best = null;
+    web.forEach((w,i) => { const r = rel(name, w.name); if (r && (!best || order[r] < order[best.r])) best = {r, w, i}; });
+    return best;
+  };
+  cps.forEach(e => {
+    let best = findWeb(e.name);
+    if (best){ usedWeb.add(best.i); data.push({cps:e.name, kind:'ok', r:best.r, w:best.w}); return; }
+    for (const a of e.alt){
+      best = findWeb(a.name);
+      if (best){ usedWeb.add(best.i); data.push({cps:e.name, kind:'alt', r:best.r, w:best.w, alt:a}); return; }
+    }
+    data.push({cps:e.name, kind:'miss'});
+  });
+  render();
+}
+
+const linkText = u => { try { const x = new URL(u); return x.hostname.replace(/^www\./,'') + decodeURIComponent(x.pathname).replace(/\/$/,''); } catch(e){ return u; } };
+
+function render(){
+  let ok=0, alias=0, alt=0, miss=0, rows='';
+  data.forEach((d,i) => {
+    if (d.kind==='ok'){
+      ok++;
+      const msg = d.r==='same' ? '' : d.r==='reordered' ? 'Name order is different (First/Last swapped) — same person.' : 'Name is shorter/longer on one side (middle name etc.) — please glance to confirm.';
+      rows += `<tr><td>${esc(d.cps)}</td>
+        <td>${esc(d.w.name)}${d.w.aff?'<div class="note">'+esc(d.w.aff)+'</div>':''}</td>
+        <td><span class="tag ok">Verified</span>${msg?'<div class="note">'+msg+'</div>':''}</td></tr>`;
+    } else if (d.kind==='alt'){
+      alt++;
+      const src = d.alt.urls.length ? 'Source: ' + d.alt.urls.map(u => `<a href="${esc(u)}" target="_blank" rel="noopener">${esc(linkText(u))} ↗</a>`).join(' · ')
+                                    : 'No source link in the AppSheet text.';
+      rows += `<tr><td>${esc(d.cps)}</td>
+        <td>${esc(d.w.name)}${d.w.aff?'<div class="note">'+esc(d.w.aff)+'</div>':''}</td>
+        <td><span class="tag ok">Verified (alternative name)</span>
+          <div class="ev">AppSheet: “${esc(d.cps)}” is also “${esc(d.alt.name)}”.<br>${src}</div>
+          ${d.r==='partial'?'<div class="note">Name is shorter/longer on one side — please glance to confirm.</div>':''}</td></tr>`;
+    } else if (d.kind==='alias'){
+      alias++;
+      rows += `<tr><td>${esc(d.cps)}</td>
+        <td>${esc(d.w.name)}${d.w.aff?'<div class="note">'+esc(d.w.aff)+'</div>':''}</td>
+        <td><span class="tag ok">Verified (stage name)</span>
+          ${d.ev.map(e => `<div class="ev">${esc(e.snippet)}<br>Source: <a href="${esc(e.url)}" target="_blank" rel="noopener">${esc(e.site)} — ${esc(e.title)} ↗</a></div>`).join('')}</td></tr>`;
+    } else {
+      miss++;
+      rows += `<tr><td>${esc(d.cps)}</td><td>—</td>
+        <td><span class="tag bad">Not found</span>
+          ${d.msg?'<div class="note">'+esc(d.msg)+'</div>':''}
+          <div><button class="sm" id="b${i}" onclick="checkAlias(${i})">Check stage name online</button></div></td></tr>`;
+    }
+  });
+  document.getElementById('sum').textContent = `CPS writers: ${data.length} · Verified: ${ok+alt+alias} (alternative names: ${alt}, online stage names: ${alias}) · Not found: ${miss}`;
+  document.getElementById('out').innerHTML =
+    `<table><thead><tr><th>YouTube CPS writer</th><th>Found on web side</th><th>Result</th></tr></thead><tbody>${rows}</tbody></table>`;
+}
+
+// Finds an unused web-side writer whose name is the same person as `n` (same words, any order, or middle name differences)
+function matchWeb(n){
+  for (let j = 0; j < web.length; j++) if (!usedWeb.has(j) && rel(n, web[j].name)) return j;
+  return -1;
+}
+const isSame = (a,b) => ['same','reordered'].includes(rel(a,b));
+
+// Free sources that allow requests straight from the browser. Each returns {wi,title,url,snippet} or null.
+const SOURCES = [
+  {site:'Wikipedia', run: async name => {
+    const base = 'https://en.wikipedia.org/w/api.php?action=query&format=json&origin=*&prop=extracts|info&exintro=1&explaintext=1&exlimit=max&inprop=url&redirects=1&';
+    const get = async q => {
+      const r = await fetch(base + q);
+      if (!r.ok) throw new Error(r.status);
+      return Object.values(((await r.json()).query || {}).pages || {});
+    };
+    const direct = (await get('titles=' + encodeURIComponent(name))).filter(p => !('missing' in p));
+    const found = (await get('generator=search&gsrlimit=5&gsrsearch=' + encodeURIComponent(name))).sort((x,y) => x.index - y.index);
+    const seen = new Set(), pages = [...direct, ...found].filter(p => !seen.has(p.pageid) && seen.add(p.pageid));
+    const A = tokens(name);
+    for (const p of pages){
+      if (!A.every(t => tokens(p.title).includes(t))) continue;   // page must be about this stage name
+      const ex = tokens(p.extract || '');
+      for (let j = 0; j < web.length; j++){
+        if (usedWeb.has(j)) continue;
+        const B = tokens(web[j].name);
+        if (B.length >= 2 && B.every(t => ex.includes(t)))
+          return {wi:j, title:p.title, url:p.fullurl, snippet:(p.extract||'').split(/(?<=\.)\s/)[0].slice(0,300)};
+      }
+    }
+    return null;
+  }},
+  {site:'MusicBrainz', run: async name => {
+    const r = await fetch('https://musicbrainz.org/ws/2/artist/?fmt=json&limit=5&query=' + encodeURIComponent('"' + name + '"'));
+    if (!r.ok) throw new Error(r.status);
+    for (const a of (await r.json()).artists || []){
+      if (![a.name, a['sort-name']].some(n => n && isSame(name, n))) continue;
+      for (const al of a.aliases || []){
+        if (!al.name || isSame(name, al.name)) continue;
+        const wi = matchWeb(al.name);
+        if (wi >= 0) return {wi, title:a.name, url:'https://musicbrainz.org/artist/' + a.id,
+          snippet:`MusicBrainz lists "${al.name}" as ${al.type ? al.type.toLowerCase() : 'an alias'} of ${a.name}.`};
+      }
+    }
+    return null;
+  }},
+  {site:'Wikidata', run: async name => {
+    const base = 'https://www.wikidata.org/w/api.php?format=json&origin=*&';
+    const r = await fetch(base + 'action=wbsearchentities&language=en&limit=5&search=' + encodeURIComponent(name));
+    if (!r.ok) throw new Error(r.status);
+    const ids = ((await r.json()).search || []).map(x => x.id);
+    if (!ids.length) return null;
+    const r2 = await fetch(base + 'action=wbgetentities&props=labels|aliases|descriptions&languages=en&ids=' + ids.join('|'));
+    const ents = (await r2.json()).entities || {};
+    for (const id of ids){
+      const e = ents[id]; if (!e) continue;
+      const label = e.labels && e.labels.en && e.labels.en.value;
+      if (!label || !isSame(name, label)) continue;
+      for (const al of (e.aliases && e.aliases.en) || []){
+        const wi = matchWeb(al.value);
+        if (wi >= 0) return {wi, title:label, url:'https://www.wikidata.org/wiki/' + id,
+          snippet:`Wikidata: ${label} is also known as "${al.value}".` + (e.descriptions && e.descriptions.en ? ' (' + e.descriptions.en.value + ')' : '')};
+      }
+    }
+    return null;
+  }}
+];
+
+async function checkAlias(i){
+  const d = data[i]; if (!d || d.kind !== 'miss') return;
+  const b = document.getElementById('b'+i); if (b){ b.disabled = true; b.textContent = 'Checking…'; }
+  const results = await Promise.allSettled(SOURCES.map(s => s.run(d.cps)));
+  let ev = [], failed = 0;
+  results.forEach((r,k) => {
+    if (r.status === 'fulfilled'){ if (r.value) ev.push({site:SOURCES[k].site, ...r.value}); } else failed++;
+  });
+  if (ev.length){
+    ev = ev.filter(e => e.wi === ev[0].wi);          // keep sources that agree on the same web-side writer
+    usedWeb.add(ev[0].wi);
+    data[i] = {cps:d.cps, kind:'alias', w:web[ev[0].wi], ev};
+  } else {
+    d.msg = failed === SOURCES.length ? 'Could not reach the websites (check internet connection).'
+      : 'Wikipedia, MusicBrainz and Wikidata do not confirm this name, so it is NOT verified.';
+  }
+  render();
+}
+
+async function checkAll(){
+  if (!data.length) verify();
+  const btn = document.getElementById('allBtn'); btn.disabled = true;
+  for (let i = 0; i < data.length; i++) if (data[i].kind==='miss') await checkAlias(i);
+  btn.disabled = false;
+}
+
+function clearAll(){
+  document.getElementById('cps').value = ''; document.getElementById('web').value = ''; document.getElementById('alt').value = '';
+  document.getElementById('out').innerHTML = ''; document.getElementById('sum').textContent = '';
+  web = []; usedWeb = new Set(); data = [];
+}
+</script>
+</body>
+</html>
